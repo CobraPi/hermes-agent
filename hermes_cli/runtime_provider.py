@@ -1229,6 +1229,84 @@ def _resolve_azure_foundry_runtime(
     }
 
 
+def _is_foundry_local(requested_provider: str) -> bool:
+    """True when ``requested_provider`` resolves to the on-device foundry-local."""
+    raw = (requested_provider or "").strip().lower()
+    if raw == "foundry-local":
+        return True
+    try:
+        from hermes_cli.providers import normalize_provider
+
+        return normalize_provider(raw) == "foundry-local"
+    except Exception:
+        return raw in {"foundrylocal", "foundry_local", "azure-foundry-local", "azure_foundry_local"}
+
+
+def _resolve_foundry_local_runtime(
+    *,
+    requested_provider: str,
+    model_cfg: Dict[str, Any],
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve a Foundry Local (on-device) runtime entry.
+
+    Provisions the model through the foundry-local SDK
+    (:mod:`agent.foundry_local_adapter`): starts the local OpenAI-compatible web
+    service, ensures the configured model is loaded, and discovers the dynamic
+    endpoint URL. The returned ``model`` is the concrete variant id the local
+    server expects, while config persists the portable alias.
+
+    A multi-GB model download is never triggered here (``allow_download=False``)
+    — that happens once, interactively, in ``hermes model``. If the model isn't
+    cached the adapter raises with guidance to run setup.
+
+    Raises :class:`AuthError` when provisioning fails so the CLI surfaces a
+    clean, actionable message.
+    """
+    model_ref = str(
+        target_model
+        or model_cfg.get("default")
+        or ""
+    ).strip()
+    if not model_ref:
+        raise AuthError(
+            "No Foundry Local model selected. Run 'hermes model' and pick a "
+            "Foundry Local model."
+        )
+
+    # FOUNDRY_LOCAL_BASE_URL optionally pins a fixed host:port for the service.
+    fixed_url = (
+        str(explicit_base_url or "").strip()
+        or _getenv("FOUNDRY_LOCAL_BASE_URL", "").strip()
+    )
+
+    try:
+        from agent.foundry_local_adapter import provision
+
+        runtime = provision(
+            model_ref,
+            allow_download=False,
+            allow_install=False,
+            fixed_url=fixed_url,
+        )
+    except Exception as exc:
+        # FoundryLocalError (and anything else) → AuthError with the message.
+        raise AuthError(
+            f"Foundry Local could not start '{model_ref}': {exc}"
+        ) from exc
+
+    return {
+        "provider": "foundry-local",
+        "api_mode": "chat_completions",
+        "base_url": runtime.base_url,
+        "api_key": runtime.api_key,
+        "model": runtime.model_id,
+        "source": "foundry-local-sdk",
+        "requested_provider": requested_provider,
+    }
+
+
 def _resolve_explicit_runtime(
     *,
     provider: str,
@@ -1329,6 +1407,14 @@ def _resolve_explicit_runtime(
             requested_provider=requested_provider,
             model_cfg=model_cfg,
             explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
+
+    # Foundry Local: on-device endpoint provisioned via the foundry-local SDK.
+    if _is_foundry_local(provider) or _is_foundry_local(requested_provider):
+        return _resolve_foundry_local_runtime(
+            requested_provider=requested_provider,
+            model_cfg=model_cfg,
             explicit_base_url=explicit_base_url,
         )
 
@@ -1434,6 +1520,17 @@ def resolve_runtime_provider(
             target_model=target_model,
         )
         return azure_runtime
+
+    # Foundry Local (on-device): provision via the foundry-local SDK and use the
+    # dynamic OpenAI-compatible endpoint. Resolve before the custom/pool/generic
+    # paths so the SDK-managed endpoint is always authoritative.
+    if _is_foundry_local(requested_provider):
+        return _resolve_foundry_local_runtime(
+            requested_provider=requested_provider,
+            model_cfg=_get_model_config(),
+            explicit_base_url=explicit_base_url,
+            target_model=target_model,
+        )
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,

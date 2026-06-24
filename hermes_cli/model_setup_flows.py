@@ -1221,6 +1221,167 @@ def _model_flow_azure_foundry(config, current_model=""):
         print("    Context length: not auto-detected (will fall back at runtime)")
     print()
 
+def _model_flow_foundry_local(config, current_model=""):
+    """Foundry Local provider: pick + provision an on-device model via the SDK.
+
+    Foundry Local (Microsoft's on-device runtime) downloads hardware-optimized
+    model variants and serves them over a local OpenAI-compatible endpoint. This
+    flow lists the device's catalog, downloads + loads the chosen model once via
+    the foundry-local SDK, and persists the portable alias to config.yaml. The
+    endpoint URL is dynamic and discovered at runtime, so there's no base URL or
+    API key to configure.
+
+    Distinct from ``_model_flow_azure_foundry`` (the *cloud* Azure AI Foundry
+    service).
+    """
+    from hermes_cli.auth import deactivate_provider
+    from hermes_cli.config import (
+        clear_model_endpoint_credentials,
+        load_config,
+        save_config,
+    )
+
+    print()
+    print("Foundry Local Configuration")
+    print("=" * 50)
+    print()
+    print("Foundry Local runs models on-device (CPU / GPU / NPU) and exposes a")
+    print("local OpenAI-compatible endpoint. Hermes provisions the model through")
+    print("the foundry-local SDK and connects to it automatically.")
+    print()
+
+    try:
+        from agent import foundry_local_adapter as fl
+    except Exception as exc:
+        print(f"  Could not load the Foundry Local adapter: {exc}")
+        return
+
+    # ── Step 1: ensure the SDK + list the catalog ────────────────────
+    if not fl.is_available():
+        print("  The 'foundry-local-sdk' package is not installed.")
+        print("  Install it with:")
+        print("      pip install foundry-local-sdk openai          (cross-platform)")
+        print("      pip install foundry-local-sdk-winml openai    (Windows, hardware-accelerated)")
+        print("  and install the runtime from:")
+        print("      https://learn.microsoft.com/azure/foundry-local/get-started")
+        print()
+        try:
+            proceed = input("Attempt to install 'foundry-local-sdk' now? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if proceed not in {"y", "yes"}:
+            print("Cancelled — install the SDK and re-run 'hermes model'.")
+            return
+
+    print("  Reading the on-device model catalog (first run may download the SDK)...")
+    try:
+        models = fl.list_models(allow_install=True)
+    except Exception as exc:
+        print(f"  Could not read the Foundry Local catalog: {exc}")
+        return
+
+    if not models:
+        print("  No models reported by Foundry Local for this device.")
+        print("  Verify the runtime is installed and that 'foundry model list' works.")
+        return
+
+    # ── Step 2: pick a model ─────────────────────────────────────────
+    print()
+    print(f"  Available models ({len(models)}):")
+    display = models[:40]
+    for i, m in enumerate(display, start=1):
+        tags = []
+        if m.loaded:
+            tags.append("loaded")
+        elif m.cached:
+            tags.append("downloaded")
+        suffix = f"  [{', '.join(tags)}]" if tags else ""
+        print(f"  {i:>2}. {m.alias}{suffix}")
+    if len(models) > len(display):
+        print(f"  ... and {len(models) - len(display)} more (type a name if not shown)")
+    print()
+
+    default_alias = current_model or display[0].alias
+    try:
+        pick = input(f"Pick by number, or type a model alias [{default_alias}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not pick:
+        alias = default_alias
+    elif pick.isdigit() and 1 <= int(pick) <= len(display):
+        alias = display[int(pick) - 1].alias
+    else:
+        alias = pick
+
+    if not alias:
+        print("No model selected. Cancelled.")
+        return
+
+    # ── Step 3: provision (download + load) ──────────────────────────
+    print()
+    print(f"  Provisioning '{alias}' (downloading + loading on first use)...")
+
+    _state = {"last": ""}
+
+    def _on_progress(stage: str, percent: float) -> None:
+        # Single updating status line for download / EP registration progress.
+        if percent is None or percent < 0:
+            line = f"    {stage}..."
+        elif stage == "download":
+            line = f"    Downloading model: {percent:5.1f}%"
+        elif stage.startswith("ep:"):
+            line = f"    Execution provider {stage[3:]}: {percent:5.1f}%"
+        else:
+            line = f"    {stage}: {percent:5.1f}%"
+        if line != _state["last"]:
+            print(line, end="\r", flush=True)
+            _state["last"] = line
+
+    try:
+        runtime = fl.provision(
+            alias,
+            allow_download=True,
+            allow_install=True,
+            on_progress=_on_progress,
+        )
+    except Exception as exc:
+        print()
+        print(f"  Provisioning failed: {exc}")
+        return
+    print()  # finish the progress line
+    print(f"  ✓ Loaded {runtime.model_id}")
+    print(f"    Endpoint: {runtime.base_url}")
+
+    # ── Step 4: persist ──────────────────────────────────────────────
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+
+    model["provider"] = "foundry-local"
+    model["default"] = alias
+    # Endpoint is provisioned dynamically by the SDK at runtime — never persist a
+    # stale base_url / api_mode / cloud auth fields.
+    clear_model_endpoint_credentials(model, clear_api_mode=True)
+    for stale in ("base_url", "auth_mode", "entra"):
+        model.pop(stale, None)
+
+    save_config(cfg)
+    deactivate_provider()
+    config["model"] = dict(model)
+
+    print()
+    print("✓ Foundry Local configured:")
+    print(f"    Model (alias):  {alias}")
+    print(f"    Wire model id:  {runtime.model_id}")
+    print("    Auth:           none (on-device)")
+    print()
+
+
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 

@@ -320,6 +320,12 @@ def _run_agent(
         explicit_base_url=explicit_base_url_from_alias,
     )
 
+    # Foundry Local persists the portable alias in config but the local server's
+    # wire request needs the concrete hardware-resolved variant id the SDK
+    # reports — the runtime resolver surfaces it under "model".
+    if runtime.get("provider") == "foundry-local" and runtime.get("model"):
+        effective_model = str(runtime["model"])
+
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.

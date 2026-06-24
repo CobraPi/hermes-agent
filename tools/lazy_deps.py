@@ -86,6 +86,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
     # users never pay this import.
     "provider.azure_identity": ("azure-identity==1.25.3",),
+    # Foundry Local — Microsoft's on-device runtime SDK. Only loaded when the
+    # user selects the foundry-local provider (pulls a heavy ONNX Runtime tree),
+    # so everyone else never pays the install. Inference itself uses the core
+    # openai SDK via the chat_completions transport.
+    "provider.foundry_local": ("foundry-local-sdk==1.2.3",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),

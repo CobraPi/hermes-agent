@@ -55,6 +55,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gmi",
     "tencent-tokenhub",
     "custom", "local",
+    "foundry-local", "foundrylocal",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",

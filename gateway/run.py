@@ -1790,6 +1790,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        # Some providers resolve a concrete wire model id that differs from the
+        # configured name (e.g. Foundry Local maps a portable alias to the
+        # hardware-specific variant id). _resolve_session_agent_runtime pops
+        # this and uses it as the effective model override.
+        "model": runtime.get("model"),
     }
 
 

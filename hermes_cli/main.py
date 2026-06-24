@@ -604,6 +604,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_minimax_oauth,
     _model_flow_custom,
     _model_flow_azure_foundry,
+    _model_flow_foundry_local,
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
@@ -3101,6 +3102,8 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
+    elif selected_provider == "foundry-local":
+        _model_flow_foundry_local(config, current_model)
     elif selected_provider in {
         "openai-api",
         "gemini",

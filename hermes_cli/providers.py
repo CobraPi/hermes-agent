@@ -202,6 +202,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",  # default; overridden by api_mode in config
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    # Foundry Local: Microsoft's *on-device* runtime (distinct from the cloud
+    # "azure-foundry" above). The OpenAI-compatible endpoint is provisioned at
+    # runtime by the foundry-local SDK (agent/foundry_local_adapter.py), so the
+    # base URL is dynamic — FOUNDRY_LOCAL_BASE_URL only pins a fixed host:port.
+    "foundry-local": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",  # local, no real auth; placeholder key used
+        base_url_env_var="FOUNDRY_LOCAL_BASE_URL",
+    ),
     "bedrock": HermesOverlay(
         transport="bedrock_converse",
         auth_type="aws_sdk",
@@ -338,6 +347,13 @@ ALIASES: Dict[str, str] = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
 
+    # Foundry Local (on-device) — NOT the cloud "azure-foundry" provider.
+    "foundry-local": "foundry-local",
+    "foundrylocal": "foundry-local",
+    "foundry_local": "foundry-local",
+    "azure-foundry-local": "foundry-local",
+    "azure_foundry_local": "foundry-local",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -363,6 +379,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
+    "foundry-local": "Foundry Local",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

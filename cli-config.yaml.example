@@ -29,13 +29,18 @@ model:
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
-  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
+  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI cloud (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
+  #   "foundry-local" - Microsoft Foundry Local on-device runtime (no key; needs foundry-local-sdk)
   #
-  # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
+  # Local servers (Foundry Local, LM Studio, Ollama, vLLM, llama.cpp):
   #   "custom"       - Any other OpenAI-compatible endpoint. Set base_url below.
   #   Aliases: "ollama", "vllm", "llamacpp" all map to "custom".
   #   LM Studio is first-class and uses provider: "lmstudio".
+  #   Foundry Local is first-class (provider: "foundry-local"); it provisions
+  #   and serves models on-device via its SDK — no base_url/key needed. Set it
+  #   up with `hermes model`. `default` holds the portable alias (e.g.
+  #   "qwen2.5-0.5b"); the concrete hardware variant id is resolved at runtime.
   #   It works with both no-auth and auth-enabled server modes.
   #
   # Can also be overridden for a single invocation with the --provider flag.
@@ -52,6 +57,12 @@ model:
   # default: "gpt-4o"          # Deployment/model name
   # entra:
   #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
+
+  # Foundry Local (on-device) example — no base_url / api_key (the SDK
+  # provisions the endpoint). Set FOUNDRY_LOCAL_BASE_URL in .env only to pin a
+  # fixed port. Run `hermes model` → "Foundry Local" to download/select a model.
+  # provider: "foundry-local"
+  # default: "qwen2.5-0.5b"    # Portable alias; resolved to the hardware variant at runtime.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #

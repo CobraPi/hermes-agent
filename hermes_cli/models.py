@@ -498,6 +498,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
+    # Foundry Local: on-device catalog is discovered live via the foundry-local
+    # SDK (see fetch_foundry_local_models); the available aliases depend on the
+    # device's hardware, so there is no static list.
+    "foundry-local": [],
     "novita": [
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
@@ -1005,6 +1009,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
+    ProviderEntry("foundry-local",  "Foundry Local",            "Foundry Local (Microsoft on-device runtime; downloads & runs hardware-optimized models)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
@@ -2978,6 +2983,44 @@ def fetch_lmstudio_models(
     return models or []
 
 
+def fetch_foundry_local_models(
+    *,
+    allow_install: bool = False,
+    include_ids: bool = True,
+    timeout: float = 30.0,
+) -> list[str]:
+    """Return Foundry Local catalog entries (aliases, plus ids) for this device.
+
+    Uses the foundry-local SDK via :mod:`agent.foundry_local_adapter`. Returns
+    an empty list when the SDK is not installed or the catalog can't be read —
+    callers treat that as "cannot validate" rather than an error, because
+    Foundry Local is a local-only, opt-in provider.
+
+    ``include_ids`` appends the concrete variant ids alongside aliases so model
+    validation accepts either the portable alias the user configured or the
+    resolved id the server reports.
+    """
+    try:
+        from agent.foundry_local_adapter import list_models as _fl_list
+    except Exception:
+        return []
+    try:
+        models = _fl_list(allow_install=allow_install, timeout=timeout)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("Foundry Local catalog fetch failed: %s", exc)
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in models:
+        for value in (m.alias, m.id) if include_ids else (m.alias,):
+            v = (value or "").strip()
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+    return out
+
+
 def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
@@ -3693,6 +3736,47 @@ def validate_requested_model(
         return {
             "accepted": False, "persist": False, "recognized": False,
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
+        }
+
+    if normalized == "foundry-local":
+        # Validate against the on-device Foundry Local catalog (alias or id).
+        # The SDK may be absent on this machine — accept leniently in that case
+        # since the runtime resolver will provision and surface a clear error.
+        try:
+            catalog = fetch_foundry_local_models()
+        except Exception:
+            catalog = []
+        if not catalog:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Could not read the Foundry Local catalog to validate `{requested}`. "
+                    "Saved anyway — run `hermes model` to download/pick it if it isn't installed."
+                ),
+            }
+        if requested_for_lookup in set(catalog):
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        auto = get_close_matches(requested_for_lookup, catalog, n=1, cutoff=0.9)
+        if auto:
+            return {
+                "accepted": True, "persist": True, "recognized": True,
+                "corrected_model": auto[0],
+                "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+            }
+        suggestions = get_close_matches(requested, catalog, n=3, cutoff=0.5)
+        suggestion_text = (
+            "\n  Available models: " + ", ".join(f"`{s}`" for s in suggestions)
+        ) if suggestions else ""
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` is not in the Foundry Local catalog for this device."
+                f"{suggestion_text}"
+            ),
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):

@@ -139,6 +139,11 @@ class CLIAgentSetupMixin:
                 not self.model or  # No model configured yet
                 self.model == self.provider or  # Model is the provider slug
                 self.model == runtime.get("name")  # Model matches provider display name
+                # Foundry Local: config stores the portable alias
+                # (e.g. "qwen2.5-0.5b") but the local server's wire request
+                # needs the concrete hardware-resolved variant id the SDK
+                # reports. The resolver is authoritative for that mapping.
+                or resolved_provider == "foundry-local"
             )
             if should_use_runtime_model:
                 self.model = runtime_model
