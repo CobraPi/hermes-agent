@@ -828,13 +828,13 @@ class MemoryManager:
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Notify external providers when the built-in memory tool writes.
+        """Notify providers when the built-in memory tool writes.
 
-        Skips the builtin provider itself (it's the source of the write).
+        Delivered to every provider, builtin included: the built-in provider
+        uses it to keep its FTS recall index in lockstep with the curated files,
+        and external providers mirror the write into their own stores.
         """
         for provider in self._providers:
-            if provider.name == "builtin":
-                continue
             try:
                 metadata_mode = self._provider_memory_write_metadata_mode(provider)
                 if metadata_mode == "keyword":

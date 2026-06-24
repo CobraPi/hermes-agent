@@ -527,6 +527,41 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+def extract_skill_tags(frontmatter: Dict[str, Any]) -> List[str]:
+    """Extract free-form tags from frontmatter for search indexing.
+
+    Tags may live under ``metadata.hermes.tags`` (the agentskills.io-style
+    location used by :func:`extract_skill_conditions`) or as a top-level
+    ``tags:`` list. Returns a case-insensitively de-duplicated, order-preserving
+    list of non-empty string tags. Never raises — malformed frontmatter yields
+    an empty list (skills are still findable by name/description).
+    """
+    collected: List[str] = []
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        hermes = metadata.get("hermes")
+        if isinstance(hermes, dict):
+            raw = hermes.get("tags")
+            if isinstance(raw, str):
+                collected.append(raw)
+            elif isinstance(raw, list):
+                collected.extend(str(t) for t in raw)
+    top = frontmatter.get("tags")
+    if isinstance(top, str):
+        collected.append(top)
+    elif isinstance(top, list):
+        collected.extend(str(t) for t in top)
+
+    out: List[str] = []
+    seen: set = set()
+    for tag in collected:
+        tag = tag.strip()
+        if tag and tag.lower() not in seen:
+            seen.add(tag.lower())
+            out.append(tag)
+    return out
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

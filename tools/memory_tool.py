@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -57,6 +58,17 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+
+def _entry_hash(content: str) -> str:
+    """Stable hash of a memory entry.
+
+    Used to mark which entries are in the frozen snapshot *core* and, by
+    :class:`agent.builtin_memory_provider.BuiltinMemoryProvider`, to exclude
+    those same entries from FTS recall — so both sides agree on identity and an
+    entry never appears in both the snapshot and the recalled context.
+    """
+    return hashlib.sha1((content or "").strip().encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +140,10 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Hashes of the entries that made it into the frozen snapshot core
+        # (per target). The built-in memory provider excludes these from recall
+        # so the in-prompt snapshot and the recalled overflow never overlap.
+        self._snapshot_core_hashes: Dict[str, set] = {"memory": set(), "user": set()}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -162,10 +178,29 @@ class MemoryStore:
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
 
-        # Capture frozen snapshot for system prompt injection
+        # Capture frozen snapshot for system prompt injection. Only the leading
+        # entries that fit the per-target char budget (the "core") enter the
+        # snapshot; any overflow stays in live state and on disk, where the
+        # built-in memory provider indexes it for relevance recall. The core
+        # boundary is computed on RAW entry lengths (matching the char budget),
+        # then the sanitized text of that same prefix is rendered. When
+        # everything fits, the core is the whole file — byte-identical to the
+        # pre-overflow snapshot, so the prefix cache is preserved.
+        mem_core_n = self._core_count("memory", self.memory_entries)
+        user_core_n = self._core_count("user", self.user_entries)
+        self._snapshot_core_hashes = {
+            "memory": {
+                _entry_hash(e) for e in self.memory_entries[:mem_core_n]
+                if e and not e.startswith("[BLOCKED:")
+            },
+            "user": {
+                _entry_hash(e) for e in self.user_entries[:user_core_n]
+                if e and not e.startswith("[BLOCKED:")
+            },
+        }
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", sanitized_memory),
-            "user": self._render_block("user", sanitized_user),
+            "memory": self._render_block("memory", sanitized_memory[:mem_core_n]),
+            "user": self._render_block("user", sanitized_user[:user_core_n]),
         }
 
     @staticmethod
@@ -293,6 +328,37 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _core_count(self, target: str, entries: List[str]) -> int:
+        """Number of leading entries whose §-joined length fits the char budget.
+
+        Always includes the first entry (even if it alone exceeds the budget) so
+        a single long entry stays visible; later entries are included while the
+        running total stays within budget. Returns ``len(entries)`` when
+        everything fits — the pre-overflow behavior (whole file in the snapshot).
+        """
+        if not entries:
+            return 0
+        limit = self._char_limit(target)
+        total = len(entries[0])
+        n = 1
+        for e in entries[1:]:
+            add = len(ENTRY_DELIMITER) + len(e)
+            if total + add > limit:
+                break
+            total += add
+            n += 1
+        return n
+
+    def snapshot_core_hashes(self) -> set:
+        """Hashes of entries present in the frozen snapshot core (both targets).
+
+        :class:`agent.builtin_memory_provider.BuiltinMemoryProvider` excludes
+        these from recall so an entry never appears both in the snapshot and the
+        recalled ``<memory-context>`` block.
+        """
+        core = self._snapshot_core_hashes
+        return set(core.get("memory") or set()) | set(core.get("user") or set())
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -314,31 +380,16 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            limit = self._char_limit(target)
 
             # Reject exact duplicates
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
-
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale or less important entries (see "
-                        f"current_entries below), then retry this add — all in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
-
+            # Memory is allowed to grow past the char budget: the budget bounds
+            # only the frozen in-prompt snapshot *core*, not what we persist. The
+            # built-in memory provider recalls overflow entries on demand, so a
+            # write is never rejected for size. _success_response surfaces a soft
+            # consolidation nudge when the file is over budget.
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
@@ -383,27 +434,10 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
-            limit = self._char_limit(target)
 
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
-
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale or less important "
-                        f"entries to make room (see current_entries below), then retry — all "
-                        f"in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
-
+            # No budget rejection: the char budget governs only the in-prompt
+            # snapshot core (see add()). A replace must always be allowed —
+            # otherwise an already-over-budget file could never be consolidated.
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
@@ -479,7 +513,6 @@ class MemoryStore:
 
             # Work on a copy; only commit if the whole batch validates.
             working: List[str] = list(self._entries_for(target))
-            limit = self._char_limit(target)
 
             for i, op in enumerate(operations):
                 op = op or {}
@@ -532,22 +565,9 @@ class MemoryStore:
                         f"{pos}: unknown action. Use add, replace, or remove.",
                     )
 
-            # Budget check against the FINAL state only.
-            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"After applying all {len(operations)} operations, memory would be at "
-                        f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
-                    ),
-                    "current_entries": self._entries_for(target),
-                    "usage": f"{current:,}/{limit:,}",
-                }
-
-            # Commit.
+            # No final-state budget rejection: the char budget governs only the
+            # in-prompt snapshot core (see add()). The whole batch commits; the
+            # built-in memory provider recalls anything beyond the core.
             self._set_entries(target, working)
             self.save_to_disk(target)
 
@@ -583,7 +603,10 @@ class MemoryStore:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        # Show the true percentage (may exceed 100%) so the model can see when
+        # the file has grown past the in-prompt snapshot budget.
+        pct = int((current / limit) * 100) if limit > 0 else 0
+        over_budget = limit > 0 and current > limit
 
         # The success response is intentionally TERMINAL: it confirms the write
         # landed and tells the model to stop. We do NOT echo the full entries
@@ -601,7 +624,18 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
-        resp["note"] = "Write saved. This update is complete — do not repeat it."
+        if over_budget:
+            # Soft nudge, NOT a rejection: the write is saved and overflow is
+            # recalled on demand. Encourage (don't force) consolidation so the
+            # always-on snapshot core stays focused.
+            resp["note"] = (
+                "Write saved. Memory now exceeds the in-prompt budget; entries "
+                "beyond it are kept and recalled on demand when relevant. "
+                "Consider consolidating overlapping entries to keep the "
+                "always-on core focused — but this is optional, not required."
+            )
+        else:
+            resp["note"] = "Write saved. This update is complete — do not repeat it."
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:

@@ -19,6 +19,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
+    extract_skill_tags,
     get_all_skills_dirs,
     get_disabled_skill_names,
     iter_skill_index_files,
@@ -1172,7 +1173,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2  # bumped: snapshot entries now carry "tags" (skill_search)
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1267,6 +1268,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "tags": extract_skill_tags(frontmatter),
     }
 
 

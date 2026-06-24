@@ -422,6 +422,26 @@ def finalize_turn(
         messages=messages,
     )
 
+    # Cheap triage gate (weak hardware): before the review fork competes with
+    # the next turn for the single inference slot, drop review work that is
+    # confidently wasted. The heuristic is conservative — it only cancels a
+    # trivial-ack memory review or a no-tool-activity skill review; everything
+    # substantive still proceeds. Best-effort: any failure reviews as before.
+    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+        try:
+            from agent.review_triage import heuristic_should_review
+            _intent = heuristic_should_review(
+                messages,
+                review_memory=_should_review_memory,
+                review_skills=_should_review_skills,
+                user_text=original_user_message,
+                agent=agent,
+            )
+            _should_review_memory = _intent.review_memory
+            _should_review_skills = _intent.review_skills
+        except Exception:
+            pass  # Triage gate is best-effort; fall back to reviewing.
+
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
     if final_response and not interrupted and (_should_review_memory or _should_review_skills):

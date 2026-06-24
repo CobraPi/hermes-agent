@@ -599,6 +599,45 @@ def _run_review_in_thread(
     except Exception:
         pass
 
+    # Optional cheap LLM triage tier (default OFF: auxiliary.review_triage.enabled).
+    # One tiny structured call on a digest decides go/no-go BEFORE the expensive
+    # ≤16-iteration review fork. Runs in this background thread (never blocks turn
+    # finalization), shares the review's single-flight slot, and is fail-open: any
+    # error proceeds to the full review, so triage can only SAVE work, never lose a
+    # review. The heuristic gate in turn_finalizer already ran; this is the second,
+    # opt-in tier for users who want to spend a tiny model to skip more forks.
+    try:
+        from hermes_cli.config import cfg_get
+        if cfg_get("auxiliary.review_triage.enabled", False):
+            from agent.review_triage import ReviewIntent, triage_llm_should_review
+
+            def _triage_complete(triage_prompt: str) -> str:
+                from agent.auxiliary_client import call_llm
+                _rt = _resolve_review_runtime(agent)
+                resp = call_llm(
+                    task="review_triage",
+                    provider=_rt.get("provider"),
+                    model=_rt.get("model"),
+                    base_url=_rt.get("base_url"),
+                    api_key=_rt.get("api_key"),
+                    main_runtime=_rt,
+                    messages=[{"role": "user", "content": triage_prompt}],
+                    temperature=0,
+                    max_tokens=60,
+                )
+                return (resp.choices[0].message.content or "") if resp else ""
+
+            # We don't have the per-path booleans here (the prompt already encodes
+            # them), so this is a binary "is anything worth saving?" gate.
+            verdict = triage_llm_should_review(
+                messages_snapshot, ReviewIntent(True, True), complete_fn=_triage_complete
+            )
+            if not verdict.any:
+                logger.debug("Review triage: nothing worth saving; skipping review fork.")
+                return
+    except Exception as _triage_exc:
+        logger.debug("Review triage tier failed (proceeding to full review): %s", _triage_exc)
+
     review_agent = None
     review_messages: List[Dict] = []
     try:
